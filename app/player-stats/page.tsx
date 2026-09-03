@@ -7,8 +7,8 @@ import { getMatches } from "@/services/match-service";
 import { getPlayers } from "@/services/player-service";
 
 import {
-  savePlayerMatchStats,
-  getStatsByMatch,
+  createPlayerMatchStats,
+  getPlayerStatsByMatch,
 } from "@/services/player-stats-service";
 
 import { Match } from "@/types/match";
@@ -359,10 +359,9 @@ export default function PlayerStatsPage() {
     }
 
     try {
-      const existingStats =
-        await getStatsByMatch(matchId);
+      const matchStats = await getPlayerStatsByMatch(matchId);
 
-      setStats(existingStats);
+      setStats(matchStats);
 
       // Create form values for both players
       const forms: Record<
@@ -372,7 +371,7 @@ export default function PlayerStatsPage() {
 
       match.playerIds?.forEach((playerId) => {
         const existing =
-          existingStats.find(
+          matchStats.find(
             (item) =>
               item.playerId === playerId
           );
@@ -525,7 +524,7 @@ export default function PlayerStatsPage() {
     try {
       setSavingPlayerId(playerId);
 
-      await savePlayerMatchStats({
+      await createPlayerMatchStats({
         matchId: selectedMatch.id,
 
         playerId,
@@ -630,10 +629,7 @@ export default function PlayerStatsPage() {
           form.playersMarked,
       });
 
-      const updatedStats =
-        await getStatsByMatch(
-          selectedMatch.id
-        );
+      const updatedStats = await getPlayerStatsByMatch(selectedMatch.id);
 
       setStats(updatedStats);
 
