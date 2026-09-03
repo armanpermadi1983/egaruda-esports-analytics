@@ -8,6 +8,7 @@ import {
   Settings,
   Shield,
   Users,
+  Network,
 } from "lucide-react";
 
 import {
@@ -38,15 +39,16 @@ const menuItems = [
     url: "/players",
     icon: Users,
   },
-  {
-    title: "Teams",
-    url: "/teams",
-    icon: Shield,
-  },
+
   {
     title: "Analytics",
     url: "/analytics",
     icon: BarChart3,
+  },
+  {
+    title: "Chemistry",
+    url: "/chemistry",
+    icon: Network,
   },
   {
     title: "Reports",

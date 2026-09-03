@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { getMatches } from "@/services/match-service";
 import { getPlayers } from "@/services/player-service";
@@ -12,6 +13,7 @@ import {
 
 import { Match } from "@/types/match";
 import { Player } from "@/types/player";
+import { formatDate } from "@/utils/date-formatter";
 import { PlayerMatchStats } from "@/types/player-stats";
 
 // ============================================================
@@ -275,6 +277,7 @@ function createEmptyStats(): Record<string, number> {
 // ============================================================
 
 export default function PlayerStatsPage() {
+  const router = useRouter();
   const [matches, setMatches] = useState<Match[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
 
@@ -657,6 +660,14 @@ export default function PlayerStatsPage() {
 
   return (
     <main className="p-6 md:p-8">
+      <div className="mb-6">
+        <button
+          onClick={() => router.back()}
+          className="text-sm font-medium text-muted-foreground hover:text-foreground"
+        >
+          ← Back
+        </button>
+      </div>
 
       {/* =====================================================
           HEADER
@@ -702,7 +713,7 @@ export default function PlayerStatsPage() {
               key={match.id}
               value={match.id}
             >
-              {match.matchDate} —{" "}
+              {formatDate(match.matchDate)} —{" "}
               {match.ourTeam} vs{" "}
               {match.opponent} —{" "}
               {match.scoreFor}-
@@ -743,7 +754,7 @@ export default function PlayerStatsPage() {
           </h2>
 
           <p className="mt-1 text-sm text-muted-foreground">
-            {selectedMatch.matchDate}
+            {formatDate(selectedMatch.matchDate)}
           </p>
 
         </div>

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 
 import {
   Radar,
@@ -17,22 +17,27 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
-  Legend,
 } from "recharts";
 
-import { getPlayer } from "@/services/player-service";
+import { getPlayer, getPlayers } from "@/services/player-service";
 import { getPlayerStatsByPlayer } from "@/services/player-stats-service";
 import { getMatches } from "@/services/match-service";
 
 import { Player } from "@/types/player";
 import { PlayerMatchStats } from "@/types/player-stats";
+import { calculateEpi, safeNumber, average, formatAverage, clamp } from "@/utils/epi-calculator";
+import { formatDate } from "@/utils/date-formatter";
 import { Match } from "@/types/match";
+import ReactMarkdown from "react-markdown";
+import { getAiCache, setAiCache, getPlayerCacheId } from "@/services/ai-cache-service";
+
 
 // =========================================================
 // PAGE
 // =========================================================
 
 export default function PlayerAnalyticsPage() {
+  const router = useRouter();
   const params = useParams();
 
   const playerId = params.playerId as string;
@@ -41,20 +46,26 @@ export default function PlayerAnalyticsPage() {
   // STATE
   // =======================================================
 
-  const [player, setPlayer] =
-    useState<Player | null>(null);
+  const [player, setPlayer] = useState<Player | null>(null);
 
-  const [stats, setStats] =
-    useState<PlayerMatchStats[]>([]);
+  const [stats, setStats] = useState<PlayerMatchStats[]>([]);
 
-  const [matches, setMatches] =
-    useState<Match[]>([]);
+  const [matches, setMatches] = useState<Match[]>([]);
 
-  const [loading, setLoading] =
-    useState(true);
+  const [loading, setLoading] = useState(true);
 
-  const [error, setError] =
-    useState("");
+  const [error, setError] = useState("");
+
+  // AI state
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiAnalysis, setAiAnalysis] = useState("");
+  const [aiError, setAiError] = useState("");
+  const [allPlayers, setAllPlayers] = useState<Player[]>([]);
+  const [selectedTeammateId, setSelectedTeammateId] = useState<string>("");
+  
+  const [isUpdateAvailable, setIsUpdateAvailable] = useState(false);
+  const [cachedMatchCount, setCachedMatchCount] = useState<number | null>(null);
+
 
   // =======================================================
   // LOAD PLAYER ANALYTICS
@@ -69,8 +80,7 @@ export default function PlayerAnalyticsPage() {
       // GET PLAYER
       // ---------------------------------------------------
 
-      const playerData =
-        await getPlayer(playerId);
+      const playerData = await getPlayer(playerId);
 
       if (!playerData) {
         setError("Player tidak ditemukan.");
@@ -78,6 +88,7 @@ export default function PlayerAnalyticsPage() {
       }
 
       setPlayer(playerData);
+
 
       // ---------------------------------------------------
       // GET PLAYER STATS
@@ -88,14 +99,16 @@ export default function PlayerAnalyticsPage() {
 
       setStats(statsData);
 
+
       // ---------------------------------------------------
-      // GET MATCHES
+      // GET MATCHES & ALL PLAYERS
       // ---------------------------------------------------
 
-      const matchesData =
-        await getMatches();
-
+      const matchesData = await getMatches();
       setMatches(matchesData);
+
+      const allPlayersData = await getPlayers();
+      setAllPlayers(allPlayersData);
 
     } catch (error) {
       console.error(
@@ -106,10 +119,12 @@ export default function PlayerAnalyticsPage() {
       setError(
         "Gagal memuat player analytics."
       );
+
     } finally {
       setLoading(false);
     }
   }
+
 
   // =======================================================
   // INITIAL LOAD
@@ -122,6 +137,34 @@ export default function PlayerAnalyticsPage() {
 
     loadPlayerAnalytics();
   }, [playerId]);
+
+  useEffect(() => {
+    async function loadAiCache() {
+      if (!playerId || stats.length === 0) return;
+      const cacheId = getPlayerCacheId(playerId, selectedTeammateId);
+      const cache = await getAiCache(cacheId);
+      if (cache) {
+        setAiAnalysis(cache.analysis);
+        setCachedMatchCount(cache.matchCount);
+        setIsUpdateAvailable(stats.length > cache.matchCount);
+      } else {
+        setAiAnalysis("");
+        setCachedMatchCount(null);
+        setIsUpdateAvailable(false);
+      }
+    }
+    loadAiCache();
+  }, [playerId, selectedTeammateId, stats.length]);
+
+
+  // =======================================================
+  // EPI CALCULATION
+  // =======================================================
+
+  const { summary, performance, epi, epiLabel } = useMemo(() => {
+    return calculateEpi(stats);
+  }, [stats]);
+
 
   // =======================================================
   // MATCH LOOKUP
@@ -143,151 +186,6 @@ export default function PlayerAnalyticsPage() {
       });
   }, [matches, stats]);
 
-  // =======================================================
-  // HELPERS
-  // =======================================================
-
-  function average(
-    values: number[]
-  ): number {
-    if (values.length === 0) {
-      return 0;
-    }
-
-    return (
-      values.reduce(
-        (sum, value) =>
-          sum + value,
-        0
-      ) / values.length
-    );
-  }
-
-  function safeNumber(
-    value: number | null | undefined
-  ): number {
-    return typeof value === "number"
-      ? value
-      : 0;
-  }
-
-  function formatAverage(
-    value: number
-  ): string {
-    return value.toFixed(1);
-  }
-
-  // =======================================================
-  // SUMMARY CALCULATIONS
-  // =======================================================
-
-  const summary = useMemo(() => {
-    if (stats.length === 0) {
-      return {
-        averageTotalPoints: 0,
-        totalGoals: 0,
-        totalAssists: 0,
-      };
-    }
-
-    const totalGoals =
-      stats.reduce(
-        (sum, stat) =>
-          sum + safeNumber(stat.goals),
-        0
-      );
-
-    const totalAssists =
-      stats.reduce(
-        (sum, stat) =>
-          sum + safeNumber(stat.assists),
-        0
-      );
-
-    const averageTotalPoints =
-      average(
-        stats.map(
-          (stat) =>
-            safeNumber(
-              stat.totalPoints
-            )
-        )
-      );
-
-    return {
-      averageTotalPoints,
-      totalGoals,
-      totalAssists,
-    };
-  }, [stats]);
-
-  // =======================================================
-  // AVERAGE PERFORMANCE CATEGORIES
-  // =======================================================
-
-  const performance = useMemo(() => {
-    return {
-      attackingPositioning:
-        average(
-          stats.map(
-            (stat) =>
-              safeNumber(
-                stat.attackingPositioning
-              )
-          )
-        ),
-
-      shooting:
-        average(
-          stats.map(
-            (stat) =>
-              safeNumber(
-                stat.shooting
-              )
-          )
-        ),
-
-      duelling:
-        average(
-          stats.map(
-            (stat) =>
-              safeNumber(
-                stat.duelling
-              )
-          )
-        ),
-
-      defensivePositioning:
-        average(
-          stats.map(
-            (stat) =>
-              safeNumber(
-                stat.defensivePositioning
-              )
-          )
-        ),
-
-      passing:
-        average(
-          stats.map(
-            (stat) =>
-              safeNumber(
-                stat.passing
-              )
-          )
-        ),
-
-      dribbling:
-        average(
-          stats.map(
-            (stat) =>
-              safeNumber(
-                stat.dribbling
-              )
-          )
-        ),
-    };
-  }, [stats]);
 
   // =======================================================
   // RADAR DATA
@@ -296,125 +194,294 @@ export default function PlayerAnalyticsPage() {
   const radarData = [
     {
       category: "Attacking",
-      value:
-        performance.attackingPositioning,
+      value: performance.attackingPositioning,
     },
 
     {
       category: "Shooting",
-      value:
-        performance.shooting,
+      value: performance.shooting,
     },
 
     {
       category: "Duelling",
-      value:
-        performance.duelling,
+      value: performance.duelling,
     },
 
     {
       category: "Defensive",
-      value:
-        performance.defensivePositioning,
+      value: performance.defensivePositioning,
     },
 
     {
       category: "Passing",
-      value:
-        performance.passing,
+      value: performance.passing,
     },
 
     {
       category: "Dribbling",
-      value:
-        performance.dribbling,
+      value: performance.dribbling,
     },
   ];
 
+
   // =======================================================
-  // PERFORMANCE TREND DATA
+  // PERFORMANCE TREND
   // =======================================================
 
-  const performanceTrendData = useMemo(() => {
-    const data = playerMatches
-      .map((match, index) => {
-        const matchStat =
-          stats.find(
-            (stat) =>
-              stat.matchId === match.id
+  const performanceTrend = useMemo(() => {
+
+    const sortedStats =
+      [...stats].sort((a, b) => {
+
+        const matchA =
+          matches.find(
+            (match) =>
+              match.id === a.matchId
           );
 
-        if (!matchStat) {
-          return null;
+        const matchB =
+          matches.find(
+            (match) =>
+              match.id === b.matchId
+          );
+
+        if (!matchA || !matchB) {
+          return 0;
         }
 
-        return {
-          matchNumber: index + 1,
+        return (
+          new Date(
+            matchA.matchDate
+          ).getTime() -
+          new Date(
+            matchB.matchDate
+          ).getTime()
+        );
 
-          matchLabel: `Match ${
-            index + 1
-          }`,
+      });
+
+
+    return sortedStats.map(
+      (stat, index) => {
+
+        const match =
+          matches.find(
+            (item) =>
+              item.id === stat.matchId
+          );
+
+
+        return {
+          match:
+            `Match ${index + 1}`,
 
           opponent:
-            match.opponent || "Unknown",
-
-          date:
-            match.matchDate || "",
+            match?.opponent ||
+            "Unknown",
 
           totalPoints:
             safeNumber(
-              matchStat.totalPoints
+              stat.totalPoints
             ),
 
           attacking:
             safeNumber(
-              matchStat.attackingPositioning
+              stat.attackingPositioning
             ),
 
           shooting:
             safeNumber(
-              matchStat.shooting
+              stat.shooting
             ),
 
           duelling:
             safeNumber(
-              matchStat.duelling
+              stat.duelling
             ),
 
           defensive:
             safeNumber(
-              matchStat.defensivePositioning
+              stat.defensivePositioning
             ),
 
           passing:
             safeNumber(
-              matchStat.passing
+              stat.passing
             ),
 
           dribbling:
             safeNumber(
-              matchStat.dribbling
+              stat.dribbling
             ),
         };
-      })
-      .filter(
-        (
-          item
-        ): item is NonNullable<
-          typeof item
-        > => item !== null
-      )
-      .reverse();
 
-    return data;
-  }, [playerMatches, stats]);
+      }
+    );
+
+  }, [stats, matches]);
+
 
   // =======================================================
-  // 32 STATISTICS
+  // AI ANALYSIS
+  // =======================================================
+
+  async function handleAIAnalysis() {
+
+    if (!player) {
+      return;
+    }
+
+    if (stats.length === 0) {
+      setAiError(
+        "Belum ada data pertandingan untuk dianalisa AI."
+      );
+      return;
+    }
+
+
+    try {
+
+      setAiLoading(true);
+      setAiError("");
+      setAiAnalysis("");
+
+
+      /*
+       * NOTE:
+       *
+       * Endpoint /api/player-analysis akan kita buat
+       * pada langkah berikutnya.
+       *
+       * API key Gemini/OpenAI TIDAK disimpan di halaman ini.
+       */
+
+      let teammateData = null;
+      if (selectedTeammateId) {
+        const teammateProfile = allPlayers.find((p) => p.id === selectedTeammateId);
+        if (teammateProfile) {
+          const teammateStats = await getPlayerStatsByPlayer(selectedTeammateId);
+          const sharedMatches = teammateStats.filter((ts) =>
+            stats.some((s) => s.matchId === ts.matchId)
+          );
+
+          teammateData = {
+            player: {
+              name: teammateProfile.name,
+              position: teammateProfile.position || "-",
+            },
+            matchesPlayedTogether: sharedMatches.length,
+            averageTotalPointsWhenTogether: average(
+              sharedMatches.map((s) => safeNumber(s.totalPoints))
+            ),
+            totalGoalsWhenTogether: sharedMatches.reduce(
+              (sum, s) => sum + safeNumber(s.goals),
+              0
+            ),
+            totalAssistsWhenTogether: sharedMatches.reduce(
+              (sum, s) => sum + safeNumber(s.assists),
+              0
+            ),
+          };
+        }
+      }
+
+      const response = await fetch(
+        "/api/player-analysis",
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            player,
+            epi: epi.score,
+            summary,
+            performance,
+            detailedStats,
+            matchHistory: performanceTrend,
+            teammateData,
+          }),
+        }
+      );
+
+
+      if (!response.ok) {
+
+        const errorData =
+          await response.json()
+            .catch(() => null);
+
+        throw new Error(
+          errorData?.error ||
+          "AI analysis failed."
+        );
+      }
+
+
+      const data =
+        await response.json();
+
+
+      const analysisResult = data.analysis || "AI tidak memberikan hasil analisa.";
+      setAiAnalysis(analysisResult);
+      setCachedMatchCount(stats.length);
+      setIsUpdateAvailable(false);
+
+      if (data.analysis) {
+        const cacheId = getPlayerCacheId(playerId, selectedTeammateId);
+        await setAiCache(cacheId, "player", data.analysis, stats.length);
+      }
+
+    } catch (error) {
+
+      console.error(
+        "AI analysis error:",
+        error
+      );
+
+      setAiError(
+        error instanceof Error
+          ? error.message
+          : "Gagal melakukan AI analysis."
+      );
+
+    } finally {
+
+      setAiLoading(false);
+
+    }
+
+  }
+
+
+  // =======================================================
+  // DETAILED 32 STATISTICS
   // =======================================================
 
   const detailedStats = useMemo(() => {
+
+    const total = (
+      selector:
+        (stat: PlayerMatchStats) =>
+          number
+    ) => {
+
+      return stats.reduce(
+        (sum, stat) =>
+          sum + safeNumber(
+            selector(stat)
+          ),
+        0
+      );
+
+    };
+
+
     return [
+
       // ---------------------------------------------------
       // OVERALL
       // ---------------------------------------------------
@@ -422,19 +489,14 @@ export default function PlayerAnalyticsPage() {
       {
         category: "Overall",
         label: "Total Points",
-        value: average(
-          stats.map(
-            (stat) =>
-              safeNumber(
-                stat.totalPoints
-              )
-          )
-        ),
+        value:
+          summary.averageTotalPoints,
         average: true,
       },
 
+
       // ---------------------------------------------------
-      // MAIN PERFORMANCE
+      // PERFORMANCE
       // ---------------------------------------------------
 
       {
@@ -442,6 +504,7 @@ export default function PlayerAnalyticsPage() {
         label: "Attacking Positioning",
         value:
           performance.attackingPositioning,
+        average: true,
       },
 
       {
@@ -449,6 +512,7 @@ export default function PlayerAnalyticsPage() {
         label: "Shooting",
         value:
           performance.shooting,
+        average: true,
       },
 
       {
@@ -456,6 +520,7 @@ export default function PlayerAnalyticsPage() {
         label: "Duelling",
         value:
           performance.duelling,
+        average: true,
       },
 
       {
@@ -463,6 +528,7 @@ export default function PlayerAnalyticsPage() {
         label: "Defensive Positioning",
         value:
           performance.defensivePositioning,
+        average: true,
       },
 
       {
@@ -470,6 +536,7 @@ export default function PlayerAnalyticsPage() {
         label: "Passing",
         value:
           performance.passing,
+        average: true,
       },
 
       {
@@ -477,7 +544,9 @@ export default function PlayerAnalyticsPage() {
         label: "Dribbling",
         value:
           performance.dribbling,
+        average: true,
       },
+
 
       // ---------------------------------------------------
       // SCORING
@@ -486,64 +555,44 @@ export default function PlayerAnalyticsPage() {
       {
         category: "Scoring",
         label: "Goals",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum + safeNumber(stat.goals),
-          0
+        value: total(
+          (stat) => stat.goals
         ),
-        total: true,
       },
 
       {
         category: "Scoring",
         label: "Shots",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum + safeNumber(stat.shots),
-          0
+        value: total(
+          (stat) => stat.shots
         ),
-        total: true,
       },
 
       {
         category: "Scoring",
         label: "Shots on Target",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.shotsOnTarget
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.shotsOnTarget
         ),
-        total: true,
       },
 
       {
         category: "Scoring",
         label: "Assists",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(stat.assists),
-          0
+        value: total(
+          (stat) => stat.assists
         ),
-        total: true,
       },
 
       {
         category: "Scoring",
         label: "Key Passes",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.keyPasses
-            ),
-          0
+        value: total(
+          (stat) => stat.keyPasses
         ),
-        total: true,
       },
+
 
       // ---------------------------------------------------
       // PASSING
@@ -552,44 +601,29 @@ export default function PlayerAnalyticsPage() {
       {
         category: "Passing",
         label: "Passes",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.passes
-            ),
-          0
+        value: total(
+          (stat) => stat.passes
         ),
-        total: true,
       },
 
       {
         category: "Passing",
         label: "Successful Passes",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.successfulPasses
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.successfulPasses
         ),
-        total: true,
       },
 
       {
         category: "Passing",
         label: "Instrumental Passes",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.instrumentalPasses
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.instrumentalPasses
         ),
-        total: true,
       },
+
 
       // ---------------------------------------------------
       // DRIBBLING
@@ -598,44 +632,29 @@ export default function PlayerAnalyticsPage() {
       {
         category: "Dribbling",
         label: "Dribbles",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.dribbles
-            ),
-          0
+        value: total(
+          (stat) => stat.dribbles
         ),
-        total: true,
       },
 
       {
         category: "Dribbling",
         label: "Successful Dribbles",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.successfulDribbles
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.successfulDribbles
         ),
-        total: true,
       },
 
       {
         category: "Dribbling",
         label: "Instrumental Dribbles",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.instrumentalDribbles
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.instrumentalDribbles
         ),
-        total: true,
       },
+
 
       // ---------------------------------------------------
       // RECEIVING
@@ -644,30 +663,20 @@ export default function PlayerAnalyticsPage() {
       {
         category: "Receiving",
         label: "Receiving",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.receiving
-            ),
-          0
+        value: total(
+          (stat) => stat.receiving
         ),
-        total: true,
       },
 
       {
         category: "Receiving",
         label: "Good Receives",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.goodReceives
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.goodReceives
         ),
-        total: true,
       },
+
 
       // ---------------------------------------------------
       // ATTACKING MOVEMENT
@@ -676,58 +685,38 @@ export default function PlayerAnalyticsPage() {
       {
         category: "Attacking Movement",
         label: "Overlaps",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.overlaps
-            ),
-          0
+        value: total(
+          (stat) => stat.overlaps
         ),
-        total: true,
       },
 
       {
         category: "Attacking Movement",
         label: "Runs Out Wide",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.runsOutWide
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.runsOutWide
         ),
-        total: true,
       },
 
       {
         category: "Attacking Movement",
         label: "Forward Runs",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.forwardRuns
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.forwardRuns
         ),
-        total: true,
       },
 
       {
         category: "Attacking Movement",
         label: "Attacking Receives",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.attackingReceives
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.attackingReceives
         ),
-        total: true,
       },
+
 
       // ---------------------------------------------------
       // DEFENSIVE
@@ -736,44 +725,30 @@ export default function PlayerAnalyticsPage() {
       {
         category: "Defensive",
         label: "Intercepts",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.intercepts
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.intercepts
         ),
-        total: true,
       },
 
       {
         category: "Defensive",
         label: "Tackles",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.tackles
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.tackles
         ),
-        total: true,
       },
 
       {
         category: "Defensive",
         label: "Impactful Steals",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.impactfulSteals
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.impactfulSteals
         ),
-        total: true,
       },
+
 
       // ---------------------------------------------------
       // PRESSING
@@ -782,30 +757,21 @@ export default function PlayerAnalyticsPage() {
       {
         category: "Pressing",
         label: "Frontal Presses",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.frontalPresses
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.frontalPresses
         ),
-        total: true,
       },
 
       {
         category: "Pressing",
         label: "Presses From Behind",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.pressesFromBehind
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.pressesFromBehind
         ),
-        total: true,
       },
+
 
       // ---------------------------------------------------
       // POSITIONING
@@ -814,96 +780,103 @@ export default function PlayerAnalyticsPage() {
       {
         category: "Positioning",
         label: "Good Positioning",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.goodPositioning
-            ),
-          0
+        value: total(
+          (stat) =>
+            stat.goodPositioning
         ),
-        total: true,
       },
 
+
       // ---------------------------------------------------
-      // MARKING / DEFENSIVE SUPPORT
+      // MARKING
       // ---------------------------------------------------
 
       {
-        category: "Marking / Defensive Support",
+        category:
+          "Marking / Defensive Support",
+
         label: "Double Marks",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.doubleMarks
-            ),
-          0
+
+        value: total(
+          (stat) =>
+            stat.doubleMarks
         ),
-        total: true,
       },
 
       {
-        category: "Marking / Defensive Support",
+        category:
+          "Marking / Defensive Support",
+
         label: "Passes Obstructed",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.passesObstructed
-            ),
-          0
+
+        value: total(
+          (stat) =>
+            stat.passesObstructed
         ),
-        total: true,
       },
 
       {
-        category: "Marking / Defensive Support",
+        category:
+          "Marking / Defensive Support",
+
         label: "Players Marked",
-        value: stats.reduce(
-          (sum, stat) =>
-            sum +
-            safeNumber(
-              stat.playersMarked
-            ),
-          0
+
+        value: total(
+          (stat) =>
+            stat.playersMarked
         ),
-        total: true,
       },
+
     ];
-  }, [stats, performance]);
+
+  }, [
+    stats,
+    summary,
+    performance,
+  ]);
+
 
   // =======================================================
   // LOADING
   // =======================================================
 
   if (loading) {
+
     return (
       <main className="p-6 md:p-8">
+
         <div className="rounded-xl border bg-card p-8 text-center">
+
           <p className="text-sm text-muted-foreground">
             Loading player analytics...
           </p>
+
         </div>
+
       </main>
     );
+
   }
+
 
   // =======================================================
   // ERROR
   // =======================================================
 
   if (error || !player) {
+
     return (
       <main className="p-6 md:p-8">
-        <Link
-          href="/players"
+
+        <button
+          onClick={() => router.back()}
           className="text-sm font-medium text-muted-foreground hover:text-foreground"
         >
           ← Back to Players
-        </Link>
+        </button>
 
         <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-8 text-center">
+
           <h1 className="text-xl font-semibold text-red-700">
             Player Not Found
           </h1>
@@ -912,10 +885,14 @@ export default function PlayerAnalyticsPage() {
             {error ||
               "Player tidak ditemukan."}
           </p>
+
         </div>
+
       </main>
     );
+
   }
+
 
   // =======================================================
   // RENDER
@@ -929,23 +906,29 @@ export default function PlayerAnalyticsPage() {
       ==================================================== */}
 
       <div className="mb-6">
-        <Link
-          href="/players"
+
+        <button
+          onClick={() => router.back()}
           className="text-sm font-medium text-muted-foreground hover:text-foreground"
         >
           ← Back to Players
-        </Link>
+        </button>
+
       </div>
 
+
       {/* ===================================================
-          PLAYER SUMMARY
+          PLAYER HEADER
       ==================================================== */}
 
       <section className="rounded-xl border bg-card shadow-sm">
+
         <div className="p-6 md:p-8">
+
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
 
             <div>
+
               <div className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
                 Player Analytics
               </div>
@@ -979,7 +962,9 @@ export default function PlayerAnalyticsPage() {
                 </span>
 
               </div>
+
             </div>
+
 
             <div className="rounded-xl bg-muted/50 px-6 py-4 text-center">
 
@@ -994,16 +979,131 @@ export default function PlayerAnalyticsPage() {
             </div>
 
           </div>
+
         </div>
+
       </section>
+
+
+      {/* ===================================================
+          EPI
+      ==================================================== */}
+
+      <section className="mt-6 rounded-xl border bg-card shadow-sm">
+
+        <div className="p-6 md:p-8">
+
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-center">
+
+            {/* SCORE */}
+
+            <div className="flex min-w-[220px] flex-col items-center justify-center">
+
+              <div className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
+                eGARUDA Performance Index
+              </div>
+
+              <div className="mt-3 text-7xl font-bold tracking-tight">
+                {epi.score.toFixed(1)}
+              </div>
+
+              <div className="mt-2 rounded-full bg-muted px-4 py-1 text-sm font-semibold">
+                {epiLabel}
+              </div>
+
+              <div className="mt-2 text-xs text-muted-foreground">
+                Performance Index • 0–100
+              </div>
+
+            </div>
+
+
+            {/* EPI BAR */}
+
+            <div className="flex-1">
+
+              <div className="flex items-center justify-between">
+
+                <div>
+                  <h2 className="text-xl font-semibold">
+                    EPI Performance
+                  </h2>
+
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Composite performance score based on match statistics.
+                  </p>
+                </div>
+
+                <div className="text-2xl font-bold">
+                  {epi.score.toFixed(1)}
+                </div>
+
+              </div>
+
+
+              <div className="mt-5 h-4 overflow-hidden rounded-full bg-muted">
+
+                <div
+                  className="h-full rounded-full bg-black transition-all"
+                  style={{
+                    width: `${epi.score}%`,
+                  }}
+                />
+
+              </div>
+
+
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+
+                <div className="rounded-lg border p-4">
+
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                    Total Points Component
+                  </div>
+
+                  <div className="mt-1 text-xl font-bold">
+                    {epi.totalPointsScore.toFixed(1)}
+                  </div>
+
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Weight: 40%
+                  </div>
+
+                </div>
+
+
+                <div className="rounded-lg border p-4">
+
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                    Performance Component
+                  </div>
+
+                  <div className="mt-1 text-xl font-bold">
+                    {epi.performanceScore.toFixed(1)}
+                  </div>
+
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Weight: 60%
+                  </div>
+
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+
+      </section>
+
 
       {/* ===================================================
           SUMMARY CARDS
       ==================================================== */}
 
       <section className="mt-6 grid gap-4 md:grid-cols-3">
-
-        {/* AVERAGE TOTAL POINTS */}
 
         <div className="rounded-xl border bg-card p-6 shadow-sm">
 
@@ -1023,7 +1123,6 @@ export default function PlayerAnalyticsPage() {
 
         </div>
 
-        {/* TOTAL GOALS */}
 
         <div className="rounded-xl border bg-card p-6 shadow-sm">
 
@@ -1041,7 +1140,6 @@ export default function PlayerAnalyticsPage() {
 
         </div>
 
-        {/* TOTAL ASSISTS */}
 
         <div className="rounded-xl border bg-card p-6 shadow-sm">
 
@@ -1061,27 +1159,25 @@ export default function PlayerAnalyticsPage() {
 
       </section>
 
+
       {/* ===================================================
           PERFORMANCE + RADAR
       ==================================================== */}
 
       <section className="mt-6 grid gap-6 lg:grid-cols-2">
 
-        {/* =================================================
-            PERFORMANCE CATEGORIES
-        ================================================== */}
+        {/* PERFORMANCE */}
 
         <div className="rounded-xl border bg-card p-6 shadow-sm">
 
-          <div>
-            <h2 className="text-xl font-semibold">
-              Average Performance
-            </h2>
+          <h2 className="text-xl font-semibold">
+            Average Performance
+          </h2>
 
-            <p className="mt-1 text-sm text-muted-foreground">
-              Average score across the six main performance categories.
-            </p>
-          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Average score across the six main performance categories.
+          </p>
+
 
           <div className="mt-6 space-y-5">
 
@@ -1139,13 +1235,14 @@ export default function PlayerAnalyticsPage() {
 
                 </div>
 
+
                 <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
 
                   <div
                     className="h-full rounded-full bg-black"
                     style={{
                       width: `${Math.min(
-                        (item.value / 3) * 100,
+                        (item.value / 500) * 100,
                         100
                       )}%`,
                     }}
@@ -1158,25 +1255,22 @@ export default function PlayerAnalyticsPage() {
             ))}
 
           </div>
+
         </div>
 
-        {/* =================================================
-            RADAR CHART
-        ================================================== */}
+
+        {/* RADAR */}
 
         <div className="rounded-xl border bg-card p-6 shadow-sm">
 
-          <div>
+          <h2 className="text-xl font-semibold">
+            Performance Radar
+          </h2>
 
-            <h2 className="text-xl font-semibold">
-              Performance Radar
-            </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Average performance profile across all analyzed matches.
+          </p>
 
-            <p className="mt-1 text-sm text-muted-foreground">
-              Average performance profile across all analyzed matches.
-            </p>
-
-          </div>
 
           <div className="mt-4 h-[350px] w-full">
 
@@ -1207,8 +1301,8 @@ export default function PlayerAnalyticsPage() {
                   />
 
                   <PolarRadiusAxis
-                    domain={[0, 3]}
-                    tickCount={4}
+                    domain={[0, 500]}
+                    tickCount={6}
                   />
 
                   <Radar
@@ -1233,47 +1327,37 @@ export default function PlayerAnalyticsPage() {
 
       </section>
 
+
       {/* ===================================================
           PERFORMANCE TREND
       ==================================================== */}
 
-      <section className="mt-6">
+      <section className="mt-6 rounded-xl border bg-card shadow-sm">
 
-        <div className="rounded-xl border bg-card p-6 shadow-sm">
+        <div className="border-b p-6">
 
-          <div>
+          <h2 className="text-xl font-semibold">
+            Performance Trend
+          </h2>
 
-            <h2 className="text-xl font-semibold">
-              Performance Trend
-            </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Performance development across each analyzed match.
+          </p>
 
-            <p className="mt-1 text-sm text-muted-foreground">
-              Performance development across each analyzed match.
-            </p>
+        </div>
 
+
+        {performanceTrend.length === 0 ? (
+
+          <div className="p-6 text-sm text-muted-foreground">
+            No performance trend available.
           </div>
 
-          {performanceTrendData.length === 0 ? (
+        ) : (
 
-            <div className="mt-6 flex h-[400px] items-center justify-center rounded-lg bg-muted/30">
+          <div className="p-6">
 
-              <div className="text-center">
-
-                <p className="text-sm font-medium">
-                  No performance trend available.
-                </p>
-
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Player statistics are required to display the trend.
-                </p>
-
-              </div>
-
-            </div>
-
-          ) : (
-
-            <div className="mt-6 h-[420px] w-full">
+            <div className="h-[400px] w-full">
 
               <ResponsiveContainer
                 width="100%"
@@ -1281,11 +1365,11 @@ export default function PlayerAnalyticsPage() {
               >
 
                 <LineChart
-                  data={performanceTrendData}
+                  data={performanceTrend}
                   margin={{
                     top: 10,
                     right: 20,
-                    left: 0,
+                    left: 10,
                     bottom: 10,
                   }}
                 >
@@ -1295,124 +1379,27 @@ export default function PlayerAnalyticsPage() {
                   />
 
                   <XAxis
-                    dataKey="matchLabel"
-                    tickLine={false}
-                    axisLine={false}
+                    dataKey="match"
                   />
 
-                  <YAxis
-                    domain={[0, 3]}
-                    tickLine={false}
-                    axisLine={false}
-                    tickCount={4}
-                  />
+                  <YAxis />
 
                   <Tooltip
-                    content={({ active, payload }) => {
-
-                      if (
-                        !active ||
-                        !payload ||
-                        payload.length === 0
-                      ) {
-                        return null;
-                      }
-
-                      const data =
-                        payload[0]
-                          ?.payload;
-
-                      if (!data) {
-                        return null;
-                      }
-
-                      return (
-                        <div className="rounded-lg border bg-background p-4 shadow-lg">
-
-                          <div className="font-semibold">
-                            {data.matchLabel}
-                          </div>
-
-                          <div className="mt-1 text-sm text-muted-foreground">
-                            vs {data.opponent}
-                          </div>
-
-                          {data.date && (
-                            <div className="mt-1 text-xs text-muted-foreground">
-                              {data.date}
-                            </div>
-                          )}
-
-                          <div className="mt-3 space-y-1 text-sm">
-
-                            <div className="flex justify-between gap-6">
-                              <span>
-                                Attacking
-                              </span>
-
-                              <span className="font-medium">
-                                {data.attacking.toFixed(1)}
-                              </span>
-                            </div>
-
-                            <div className="flex justify-between gap-6">
-                              <span>
-                                Shooting
-                              </span>
-
-                              <span className="font-medium">
-                                {data.shooting.toFixed(1)}
-                              </span>
-                            </div>
-
-                            <div className="flex justify-between gap-6">
-                              <span>
-                                Duelling
-                              </span>
-
-                              <span className="font-medium">
-                                {data.duelling.toFixed(1)}
-                              </span>
-                            </div>
-
-                            <div className="flex justify-between gap-6">
-                              <span>
-                                Defensive
-                              </span>
-
-                              <span className="font-medium">
-                                {data.defensive.toFixed(1)}
-                              </span>
-                            </div>
-
-                            <div className="flex justify-between gap-6">
-                              <span>
-                                Passing
-                              </span>
-
-                              <span className="font-medium">
-                                {data.passing.toFixed(1)}
-                              </span>
-                            </div>
-
-                            <div className="flex justify-between gap-6">
-                              <span>
-                                Dribbling
-                              </span>
-
-                              <span className="font-medium">
-                                {data.dribbling.toFixed(1)}
-                              </span>
-                            </div>
-
-                          </div>
-
-                        </div>
-                      );
-                    }}
+                    formatter={(value) =>
+                      typeof value === "number"
+                        ? value.toFixed(1)
+                        : value
+                    }
                   />
 
-                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="totalPoints"
+                    name="Total Points"
+                    stroke="currentColor"
+                    strokeWidth={3}
+                    dot
+                  />
 
                   <Line
                     type="monotone"
@@ -1420,8 +1407,7 @@ export default function PlayerAnalyticsPage() {
                     name="Attacking"
                     stroke="currentColor"
                     strokeWidth={2}
-                    dot={{ r: 4 }}
-                    activeDot={{ r: 6 }}
+                    strokeDasharray="5 5"
                   />
 
                   <Line
@@ -1430,28 +1416,6 @@ export default function PlayerAnalyticsPage() {
                     name="Shooting"
                     stroke="currentColor"
                     strokeWidth={2}
-                    dot={{ r: 4 }}
-                    activeDot={{ r: 6 }}
-                  />
-
-                  <Line
-                    type="monotone"
-                    dataKey="duelling"
-                    name="Duelling"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                    dot={{ r: 4 }}
-                    activeDot={{ r: 6 }}
-                  />
-
-                  <Line
-                    type="monotone"
-                    dataKey="defensive"
-                    name="Defensive"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                    dot={{ r: 4 }}
-                    activeDot={{ r: 6 }}
                   />
 
                   <Line
@@ -1460,8 +1424,6 @@ export default function PlayerAnalyticsPage() {
                     name="Passing"
                     stroke="currentColor"
                     strokeWidth={2}
-                    dot={{ r: 4 }}
-                    activeDot={{ r: 6 }}
                   />
 
                   <Line
@@ -1470,8 +1432,6 @@ export default function PlayerAnalyticsPage() {
                     name="Dribbling"
                     stroke="currentColor"
                     strokeWidth={2}
-                    dot={{ r: 4 }}
-                    activeDot={{ r: 6 }}
                   />
 
                 </LineChart>
@@ -1480,11 +1440,139 @@ export default function PlayerAnalyticsPage() {
 
             </div>
 
+          </div>
+
+        )}
+
+      </section>
+
+
+      {/* ===================================================
+          AI COACH ANALYSIS
+      ==================================================== */}
+
+      <section className="mt-6 rounded-xl border bg-card shadow-sm">
+
+        <div className="border-b p-6">
+
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+
+            <div>
+
+              <h2 className="text-xl font-semibold">
+                AI Coach Analysis
+              </h2>
+
+              <p className="mt-1 text-sm text-muted-foreground">
+                Use AI to identify strengths, weaknesses and training priorities.
+              </p>
+
+            </div>
+
+            <div className="flex items-center gap-3">
+              <select
+                value={selectedTeammateId}
+                onChange={(e) => setSelectedTeammateId(e.target.value)}
+                className="rounded-md border p-2 text-sm"
+                disabled={aiLoading}
+              >
+                <option value="">-- Analisa Tunggal --</option>
+                {allPlayers
+                  .filter((p) => p.id !== playerId)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      Bandingkan dengan {p.name}
+                    </option>
+                  ))}
+              </select>
+
+              <button
+                type="button"
+                onClick={handleAIAnalysis}
+                disabled={aiLoading || stats.length === 0}
+                className="rounded-md bg-black px-5 py-2.5 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {aiLoading ? "Analyzing..." : isUpdateAvailable ? "Perbarui Analisa AI" : "Analyze with AI"}
+              </button>
+            </div>
+
+          </div>
+
+        </div>
+
+
+        <div className="p-6">
+
+          {aiError && (
+
+            <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              {aiError}
+            </div>
+
+          )}
+
+          {isUpdateAvailable && aiAnalysis && !aiLoading && (
+            <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+              <strong>⚠️ Update Tersedia:</strong> Terdapat pertandingan baru sejak analisa ini dibuat. Klik "Perbarui Analisa AI" untuk membuat ulang laporan.
+            </div>
+          )}
+
+          {!aiError &&
+            !aiAnalysis &&
+            !aiLoading && (
+
+              <div className="rounded-lg bg-muted/40 p-6 text-center">
+
+                <div className="text-sm font-medium">
+                  AI analysis belum dijalankan
+                </div>
+
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Klik "Analyze with AI" untuk mendapatkan analisa pemain.
+                </div>
+
+              </div>
+
+            )}
+
+
+          {aiLoading && (
+
+            <div className="rounded-lg bg-muted/40 p-6 text-center">
+
+              <div className="text-sm font-medium">
+                AI sedang menganalisa data pemain...
+              </div>
+
+              <div className="mt-1 text-xs text-muted-foreground">
+                Analisa mencakup performa, konsistensi, strengths dan training focus.
+              </div>
+
+            </div>
+
+          )}
+
+
+          {aiAnalysis && (
+
+            <div className="rounded-xl border p-6">
+
+              <div className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                AI Coach Report
+              </div>
+
+              <div className="prose prose-sm md:prose-base dark:prose-invert max-w-none text-sm leading-7">
+                <ReactMarkdown>{aiAnalysis}</ReactMarkdown>
+              </div>
+
+            </div>
+
           )}
 
         </div>
 
       </section>
+
 
       {/* ===================================================
           MATCH HISTORY
@@ -1505,6 +1593,7 @@ export default function PlayerAnalyticsPage() {
             </p>
 
           </div>
+
 
           {playerMatches.length === 0 ? (
 
@@ -1535,6 +1624,10 @@ export default function PlayerAnalyticsPage() {
                     </th>
 
                     <th className="px-6 py-3 text-center font-medium">
+                      EPI
+                    </th>
+
+                    <th className="px-6 py-3 text-center font-medium">
                       Points
                     </th>
 
@@ -1554,6 +1647,7 @@ export default function PlayerAnalyticsPage() {
 
                 </thead>
 
+
                 <tbody>
 
                   {playerMatches.map(
@@ -1566,6 +1660,75 @@ export default function PlayerAnalyticsPage() {
                             match.id
                         );
 
+
+                      if (!matchStat) {
+                        return null;
+                      }
+
+
+                      /*
+                       * Match-level EPI.
+                       *
+                       * Same weighting as overall EPI:
+                       * 40% total points
+                       * 60% six performance categories
+                       */
+
+                      const matchPerformance =
+                        average([
+                          safeNumber(
+                            matchStat.attackingPositioning
+                          ),
+
+                          safeNumber(
+                            matchStat.shooting
+                          ),
+
+                          safeNumber(
+                            matchStat.duelling
+                          ),
+
+                          safeNumber(
+                            matchStat.defensivePositioning
+                          ),
+
+                          safeNumber(
+                            matchStat.passing
+                          ),
+
+                          safeNumber(
+                            matchStat.dribbling
+                          ),
+                        ]);
+
+
+                      const matchTotalScore =
+                        clamp(
+                          (
+                            safeNumber(
+                              matchStat.totalPoints
+                            ) / 1500
+                          ) * 100,
+                          0,
+                          100
+                        );
+
+
+                      const matchPerformanceScore =
+                        clamp(
+                          (
+                            matchPerformance / 500
+                          ) * 100,
+                          0,
+                          100
+                        );
+
+
+                      const matchEpi =
+                        matchTotalScore * 0.4 +
+                        matchPerformanceScore * 0.6;
+
+
                       return (
 
                         <tr
@@ -1574,35 +1737,46 @@ export default function PlayerAnalyticsPage() {
                         >
 
                           <td className="px-6 py-4">
-                            {match.matchDate}
+                            {formatDate(match.matchDate)}
                           </td>
+
 
                           <td className="px-6 py-4 font-medium">
                             {match.opponent}
                           </td>
 
+
                           <td className="px-6 py-4 text-center font-semibold">
+
                             {match.scoreFor} -{" "}
                             {match.scoreAgainst}
+
                           </td>
 
-                          <td className="px-6 py-4 text-center">
-                            {matchStat
-                              ? matchStat.totalPoints
-                              : "-"}
-                          </td>
 
                           <td className="px-6 py-4 text-center">
-                            {matchStat
-                              ? matchStat.goals
-                              : "-"}
+
+                            <span className="font-bold">
+                              {matchEpi.toFixed(1)}
+                            </span>
+
                           </td>
 
+
                           <td className="px-6 py-4 text-center">
-                            {matchStat
-                              ? matchStat.assists
-                              : "-"}
+                            {matchStat.totalPoints}
                           </td>
+
+
+                          <td className="px-6 py-4 text-center">
+                            {matchStat.goals}
+                          </td>
+
+
+                          <td className="px-6 py-4 text-center">
+                            {matchStat.assists}
+                          </td>
+
 
                           <td className="px-6 py-4 text-right">
 
@@ -1634,6 +1808,7 @@ export default function PlayerAnalyticsPage() {
 
       </section>
 
+
       {/* ===================================================
           DETAILED 32 STATISTICS
       ==================================================== */}
@@ -1653,6 +1828,7 @@ export default function PlayerAnalyticsPage() {
             </p>
 
           </div>
+
 
           {stats.length === 0 ? (
 
@@ -1685,11 +1861,13 @@ export default function PlayerAnalyticsPage() {
                       category
                   );
 
+
                 if (
                   categoryStats.length === 0
                 ) {
                   return null;
                 }
+
 
                 return (
 
@@ -1701,6 +1879,7 @@ export default function PlayerAnalyticsPage() {
                     <h3 className="font-semibold">
                       {category}
                     </h3>
+
 
                     <div className="mt-4 space-y-3">
 
@@ -1747,8 +1926,9 @@ export default function PlayerAnalyticsPage() {
 
       </section>
 
+
       {/* ===================================================
-          FOOTER INFORMATION
+          FOOTER
       ==================================================== */}
 
       <div className="mt-6 pb-8 text-center text-xs text-muted-foreground">

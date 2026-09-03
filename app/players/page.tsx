@@ -2,11 +2,13 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { createPlayer, getPlayers } from "@/services/player-service";
 import { Player } from "@/types/player";
 
 export default function PlayersPage() {
+  const router = useRouter();
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -69,6 +71,8 @@ export default function PlayersPage() {
 
   return (
     <main className="p-6 md:p-8">
+
+
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">

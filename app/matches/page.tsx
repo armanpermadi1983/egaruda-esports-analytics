@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import {
   createMatch,
@@ -13,8 +15,10 @@ import { uploadMatchScreenshot } from "@/services/storage-service";
 
 import { Match } from "@/types/match";
 import { Player } from "@/types/player";
+import { formatDate } from "@/utils/date-formatter";
 
 export default function MatchesPage() {
+  const router = useRouter();
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -369,6 +373,8 @@ export default function MatchesPage() {
 
   return (
     <main className="p-6 md:p-8">
+
+
 
       {/* =====================================================
           HEADER
@@ -949,7 +955,7 @@ export default function MatchesPage() {
                     {/* DATE */}
 
                     <td className="px-6 py-4">
-                      {match.matchDate}
+                      {formatDate(match.matchDate)}
                     </td>
 
                     {/* MATCH */}

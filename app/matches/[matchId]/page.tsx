@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { formatDate } from "@/utils/date-formatter";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useParams } from "next/navigation";
 
 import { getMatch } from "@/services/match-service";
@@ -189,7 +191,7 @@ function CategorySection({
 // =========================================================
 
 export default function MatchDetailPage() {
-
+  const router = useRouter();
   const params = useParams();
 
   const matchId =
@@ -568,12 +570,12 @@ export default function MatchDetailPage() {
 
         <div className="mb-6">
 
-          <Link
-            href="/matches"
+          <button
+            onClick={() => router.back()}
             className="text-sm font-medium text-muted-foreground hover:text-foreground"
           >
             ← Back to Matches
-          </Link>
+          </button>
 
         </div>
 
@@ -617,12 +619,12 @@ export default function MatchDetailPage() {
 
       <div className="mb-6">
 
-        <Link
-          href="/matches"
+        <button
+          onClick={() => router.back()}
           className="text-sm font-medium text-muted-foreground hover:text-foreground"
         >
           ← Back to Matches
-        </Link>
+        </button>
 
       </div>
 
@@ -667,7 +669,7 @@ export default function MatchDetailPage() {
               </div>
 
               <div className="mt-2 text-sm text-muted-foreground">
-                {match.matchDate}
+                {formatDate(match.matchDate)}
               </div>
 
             </div>
